@@ -1,7 +1,7 @@
 #!/bin/bash
 # ======================================================
-# AUTONET - Комплексный скрипт настройки сетевой инфраструктуры
-# Версия 2.1
+# AUTONET - Комплексный скрипт настройки сетевой инфраструктуры (1 module)
+# by flffy-btw (github)
 # ======================================================
 
 set -euo pipefail
@@ -423,6 +423,9 @@ setup_dns() {
     
     systemctl disable --now bind 2>/dev/null || true
     
+    # Установка временного DNS-сервера для разрешения имен
+    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+    
     apt-get update
     apt-get install -y dnsmasq
     
@@ -453,6 +456,10 @@ EOF
     
     systemctl enable --now dnsmasq
     systemctl restart dnsmasq
+    
+    # Настройка DNS-клиента для использования локального сервера
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
     
     # Проверка работы DNS
     if ping -c 2 hq-rtr.au-team.irpo &>/dev/null; then
