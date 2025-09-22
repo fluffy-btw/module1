@@ -1,7 +1,7 @@
 #!/bin/bash
 # ======================================================
-# AUTONET - Комплексный скрипт настройки сетевой инфраструктуры (1 module)
-# by flffy-btw (github)
+# AUTONET - Комплексный скрипт настройки сетевой инфраструктуры
+# Версия 2.2
 # ======================================================
 
 set -euo pipefail
@@ -288,29 +288,32 @@ setup_gre_tunnel() {
     
     case "$CURRENT_DEVICE" in
         "HQ-RTR")
+            # Добавляем задержку для гарантии поднятия физического интерфейса
             cat >> /etc/network/interfaces << EOF
 
+# GRE Tunnel to BR-RTR
 auto gre1
-iface gre1 inet tunnel
-address 10.10.10.1
-netmask 255.255.255.252
-mode gre
-local 172.16.4.2
-endpoint 172.16.5.2
-ttl 255
+iface gre1 inet static
+    address 10.10.10.1
+    netmask 255.255.255.252
+    pre-up sleep 5
+    up ip tunnel add gre1 mode gre local 172.16.4.2 remote 172.16.5.2 ttl 255
+    up ip link set gre1 up
+    down ip tunnel del gre1
 EOF
             ;;
         "BR-RTR")
             cat >> /etc/network/interfaces << EOF
 
+# GRE Tunnel to HQ-RTR
 auto gre1
-iface gre1 inet tunnel
-address 10.10.10.2
-netmask 255.255.255.252
-mode gre
-local 172.16.5.2
-endpoint 172.16.4.2
-ttl 255
+iface gre1 inet static
+    address 10.10.10.2
+    netmask 255.255.255.252
+    pre-up sleep 5
+    up ip tunnel add gre1 mode gre local 172.16.5.2 remote 172.16.4.2 ttl 255
+    up ip link set gre1 up
+    down ip tunnel del gre1
 EOF
             ;;
         *)
@@ -319,10 +322,23 @@ EOF
             ;;
     esac
     
+    # Убедимся, что модуль GRE загружен при загрузке
+    if ! grep -q "gre" /etc/modules; then
+        echo "gre" >> /etc/modules
+        modprobe gre
+    fi
+    
     restart_networking
     
     if [[ "$CURRENT_DEVICE" == "BR-RTR" ]]; then
-        ping -c 4 10.10.10.1 && success "GRE-туннель настроен и проверен" || warning "Проблемы с GRE-туннелем"
+        sleep 10
+        if ping -c 3 -W 2 10.10.10.1 >/dev/null 2>&1; then
+            success "GRE-туннель настроен и проверен"
+        else
+            warning "Проблемы с GRE-туннелем, проверяем вручную..."
+            # Дополнительная диагностика
+            ip link show gre1 2>/dev/null && ip addr show gre1 2>/dev/null
+        fi
     else
         success "GRE-туннель настроен"
     fi
