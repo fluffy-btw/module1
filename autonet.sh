@@ -288,32 +288,26 @@ setup_gre_tunnel() {
     
     case "$CURRENT_DEVICE" in
         "HQ-RTR")
-            # Добавляем задержку для гарантии поднятия физического интерфейса
-            cat >> /etc/network/interfaces << EOF
-
-# GRE Tunnel to BR-RTR
-auto gre1
+            # Создаем отдельный файл для туннеля
+            cat > /etc/network/interfaces.d/gre1 << EOF
+allow-hotplug gre1
 iface gre1 inet static
     address 10.10.10.1
     netmask 255.255.255.252
-    pre-up sleep 5
-    up ip tunnel add gre1 mode gre local 172.16.4.2 remote 172.16.5.2 ttl 255
+    pre-up ip tunnel add gre1 mode gre local 172.16.4.2 remote 172.16.5.2 ttl 255 || true
     up ip link set gre1 up
-    down ip tunnel del gre1
+    down ip tunnel del gre1 || true
 EOF
             ;;
         "BR-RTR")
-            cat >> /etc/network/interfaces << EOF
-
-# GRE Tunnel to HQ-RTR
-auto gre1
+            cat > /etc/network/interfaces.d/gre1 << EOF
+allow-hotplug gre1
 iface gre1 inet static
     address 10.10.10.2
     netmask 255.255.255.252
-    pre-up sleep 5
-    up ip tunnel add gre1 mode gre local 172.16.5.2 remote 172.16.4.2 ttl 255
+    pre-up ip tunnel add gre1 mode gre local 172.16.5.2 remote 172.16.4.2 ttl 255 || true
     up ip link set gre1 up
-    down ip tunnel del gre1
+    down ip tunnel del gre1 || true
 EOF
             ;;
         *)
@@ -322,22 +316,47 @@ EOF
             ;;
     esac
     
-    # Убедимся, что модуль GRE загружен при загрузке
+    # Убедимся, что модуль GRE загружен
     if ! grep -q "gre" /etc/modules; then
         echo "gre" >> /etc/modules
         modprobe gre
     fi
     
-    restart_networking
+    # Включаем обработку интерфейсов из interfaces.d
+    if ! grep -q "source-directory /etc/network/interfaces.d" /etc/network/interfaces; then
+        echo "source-directory /etc/network/interfaces.d" >> /etc/network/interfaces
+    fi
     
+    log "Проверка конфигурации туннеля..."
+    
+    # Проверяем синтаксис конфигурации
+    if ifup --allow=hotplug -n gre1; then
+        log "Конфигурация туннеля корректна"
+    else
+        warning "Есть проблемы в конфигурации туннеля"
+    fi
+    
+    # Применяем конфигурацию без полного перезапуска networking
+    log "Применяем конфигурацию туннеля..."
+    ifdown gre1 2>/dev/null || true
+    ifup gre1 2>/dev/null || warning "Не удалось поднять туннель сразу"
+    
+    # Добавляем в cron для автоматического восстановления после перезагрузки
+    if [[ "$CURRENT_DEVICE" == "HQ-RTR" ]]; then
+        add_cron_job "@reboot sleep 20 && /sbin/ip tunnel add gre1 mode gre local 172.16.4.2 remote 172.16.5.2 ttl 255 && /sbin/ip addr add 10.10.10.1/30 dev gre1 && /sbin/ip link set gre1 up"
+    elif [[ "$CURRENT_DEVICE" == "BR-RTR" ]]; then
+        add_cron_job "@reboot sleep 20 && /sbin/ip tunnel add gre1 mode gre local 172.16.5.2 remote 172.16.4.2 ttl 255 && /sbin/ip addr add 10.10.10.2/30 dev gre1 && /sbin/ip link set gre1 up"
+    fi
+    
+    # Проверяем туннель
+    sleep 3
     if [[ "$CURRENT_DEVICE" == "BR-RTR" ]]; then
-        sleep 10
-        if ping -c 3 -W 2 10.10.10.1 >/dev/null 2>&1; then
-            success "GRE-туннель настроен и проверен"
+        if ping -c 3 -W 3 10.10.10.1 >/dev/null 2>&1; then
+            success "GRE-туннель настроен и работает"
         else
-            warning "Проблемы с GRE-туннелем, проверяем вручную..."
-            # Дополнительная диагностика
-            ip link show gre1 2>/dev/null && ip addr show gre1 2>/dev/null
+            warning "Туннель настроен, но ping не проходит. Проверяем состояние..."
+            ip link show gre1 2>/dev/null || error "Туннель не создан"
+            ip addr show gre1 2>/dev/null || error "Туннель не имеет IP-адреса"
         fi
     else
         success "GRE-туннель настроен"
